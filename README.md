@@ -30,13 +30,13 @@ Create ```data``` folder and ```output``` folder like:
 |	| -- InstructionTuning
 |		| -- final_data
 |			| -- instruction_tuning_all_v1
-|		| -- MiddelWare
+|		| -- middleware
 |			| -- all_v1
 |		| -- raw_materials
 |	| -- Reinforcement Learning
 |		| -- final_data
 |			| -- rlvr_sample1500
-|		| -- MiddelWare
+|		| -- middleware
 |			| -- sample1500
 |		| -- raw_materials
 | -- output
