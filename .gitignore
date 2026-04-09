@@ -1,0 +1,8 @@
+data/
+wandb/
+tmp/
+output/
+**/__pycache__/
+**/*.pyc
+slurm.sh
+.vscode/
