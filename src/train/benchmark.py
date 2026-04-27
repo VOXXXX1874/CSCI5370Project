@@ -2,7 +2,7 @@ from datasets import load_dataset, Dataset, DatasetDict
 from vllm import LLM, SamplingParams
 import argparse
 import json
-from rewards import eval_answer_reward
+from rewards import eval_answer_reward, bleu_reward, rouge_n_reward, rouge_l_reward, rouge_s_reward, distinct_n_reward
 # import torch
 import re
 
@@ -91,11 +91,27 @@ def vllm_generate(model_name, output_name, dataset_name, num_gpus, max_output_to
     outputs = llm.chat(prompts,
                            sampling_params,
                            chat_template_kwargs={'enable_thinking': args.enable_thinking})
-    acc_scores = []
-    format_scores = []
+    
+    if args.reward_types == 'text':
+        bleu_reward_func = bleu_reward(n=4)
+        rouge_1_reward_func = rouge_n_reward(n=1)
+        rouge_2_reward_func = rouge_n_reward(n=2)
+        rouge_l_reward_func = rouge_l_reward()
+        rouge_s_reward_func = rouge_s_reward()
+        distinct_1_reward_func = distinct_n_reward(n=1)
+        distinct_2_reward_func = distinct_n_reward(n=2)
+        bleu_rewards = []
+        rouge_1_rewards = []
+        rouge_2_rewards = []
+        rouge_l_rewards = []
+        rouge_s_rewards = []
+        distinct_1_rewards = []
+        distinct_2_rewards = []
+    elif args.reward_types == 'acc':
+        acc_scores = []
+        format_scores = []
+        
     result_all = []
-    total_acc = 0
-    total_format = 0
 
     completions_for_rewards = []
     problems_for_rewards = []
@@ -112,10 +128,26 @@ def vllm_generate(model_name, output_name, dataset_name, num_gpus, max_output_to
             processes_for_rewards.append(gold_process)
             verifiers_for_rewards.append(verifier)
 
-    accuracy_rewards = eval_answer_reward(completions = completions_for_rewards,
-                                    problems = problems_for_rewards,
-                                    solutions = solutions_for_rewards,
-                                    verifiers = verifiers_for_rewards,)
+    if args.reward_types == 'text':
+        bleu_rewards = bleu_reward_func(completions = completions_for_rewards,
+                                        solution = solutions_for_rewards,)
+        rouge_1_rewards = rouge_1_reward_func(completions = completions_for_rewards,
+                                            solution = solutions_for_rewards,)
+        rouge_2_rewards = rouge_2_reward_func(completions = completions_for_rewards,
+                                            solution = solutions_for_rewards,)
+        rouge_l_rewards = rouge_l_reward_func(completions = completions_for_rewards,
+                                            solution = solutions_for_rewards,)
+        rouge_s_rewards = rouge_s_reward_func(completions = completions_for_rewards,
+                                            solution = solutions_for_rewards,)
+        distinct_1_rewards = distinct_1_reward_func(completions = completions_for_rewards,
+                                                   solution = solutions_for_rewards,)
+        distinct_2_rewards = distinct_2_reward_func(completions = completions_for_rewards,
+                                                   solution = solutions_for_rewards,)
+    elif args.reward_types == 'acc':
+        accuracy_rewards = eval_answer_reward(completions = completions_for_rewards,
+                                        problems = problems_for_rewards,
+                                        solutions = solutions_for_rewards,
+                                        verifiers = verifiers_for_rewards,)
     
     for idx in range(len(completions_for_rewards)):
         completion = completions_for_rewards[idx]
@@ -124,28 +156,57 @@ def vllm_generate(model_name, output_name, dataset_name, num_gpus, max_output_to
         gold_process = processes_for_rewards[idx]
         verifier = verifiers_for_rewards[idx]
 
-        acc_score = accuracy_rewards[idx]
-        acc_scores.append(acc_score)
-        total_acc += acc_score
+        if args.reward_types == 'text':
+            bleu_reward_score = bleu_rewards[idx]
+            rouge_1_reward_score = rouge_1_rewards[idx]
+            rouge_2_reward_score = rouge_2_rewards[idx]
+            rouge_l_reward_score = rouge_l_rewards[idx]
+            rouge_s_reward_score = rouge_s_rewards[idx]
+            distinct_1_reward_score = distinct_1_rewards[idx]
+            distinct_2_reward_score = distinct_2_rewards[idx]
+            result_all.append({
+                'problem': problem,
+                'gold_solution': gold_solution,
+                'gold_process': gold_process,
+                'verifier': verifier,
+                'completion': completion,
+                'bleu_reward_score': bleu_reward_score,
+                'rouge_1_reward_score': rouge_1_reward_score,
+                'rouge_2_reward_score': rouge_2_reward_score,
+                'rouge_l_reward_score': rouge_l_reward_score,
+                'rouge_s_reward_score': rouge_s_reward_score,
+                'distinct_1_reward_score': distinct_1_reward_score,
+                'distinct_2_reward_score': distinct_2_reward_score,
+            })
+        elif args.reward_types == 'acc':
+            acc_score = accuracy_rewards[idx]
+            acc_scores.append(acc_score)
+            format_score = format_reward(completion)
+            format_scores.append(format_score)
 
-        format_score = format_reward(completion)
-        format_scores.append(format_score)
-        total_format += format_score
-
-        result_all.append({
-            'problem': problem,
-            'gold_solution': gold_solution,
-            'gold_process': gold_process,
-            'verifier': verifier,
-            'completion': completion,
-            'acc_score': acc_score,
-            'format_score': format_score,
-        })
+            result_all.append({
+                'problem': problem,
+                'gold_solution': gold_solution,
+                'gold_process': gold_process,
+                'verifier': verifier,
+                'completion': completion,
+                'acc_score': acc_score,
+                'format_score': format_score,
+            })
 
     print('='*100)
-    print('eval num: ', len(acc_scores))
-    print('eval acc: ', total_acc / len(acc_scores))
-    print('eval format: ',total_format / len(format_scores))
+    print('eval num: ', len(completions_for_rewards))
+    if args.reward_types == 'text':
+        print('bleu_reward_score: ', sum(bleu_rewards) / len(bleu_rewards))
+        print('rouge_1_reward_score: ', sum(rouge_1_rewards) / len(rouge_1_rewards))
+        print('rouge_2_reward_score: ', sum(rouge_2_rewards) / len(rouge_2_rewards))
+        print('rouge_l_reward_score: ', sum(rouge_l_rewards) / len(rouge_l_rewards))
+        print('rouge_s_reward_score: ', sum(rouge_s_rewards) / len(rouge_s_rewards))
+        print('distinct_1_reward_score: ', sum(distinct_1_rewards) / len(distinct_1_rewards))
+        print('distinct_2_reward_score: ', sum(distinct_2_rewards) / len(distinct_2_rewards))
+    elif args.reward_types == 'acc':
+        print('eval acc: ', sum(acc_scores) / len(acc_scores))
+        print('eval format: ',sum(format_scores) / len(format_scores))
 
     current_result_file = output_name + '.json'
     with open(current_result_file, 'w', encoding='utf-8') as file:
@@ -174,6 +235,8 @@ if __name__ == "__main__":
                         help='number of responses generated for each prompt')
     parser.add_argument('--num_samples', type=int, default=99999999,
                         help='number of samples to evaluate')
+    parser.add_argument('--reward_types', type=str, default='acc',
+                        help='types of rewards to use')
     args = parser.parse_args()
     print(args)
 

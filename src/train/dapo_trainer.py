@@ -1371,6 +1371,19 @@ class DAPOTrainer(GRPOTrainer):
         for i, name in enumerate(self.reward_func_names):
             self._logs["rewards"][name].extend(rewards_per_func[:, i].tolist())
 
+        if self.dynamic_sampling_scale == 1.0 and self.overlong_filter_scale == 1.0:
+            return (
+                inputs,
+                prompts,
+                prompt_ids_list,
+                completion_ids_list,
+                tool_mask_list,
+                completions,
+                sampling_per_token_logps_list,
+                extra_fields,
+                rewards_per_func,
+            )
+
         # Find the index of reward function "accuracy_reward"
         accuracy_reward_index = None
         for i, reward_func_name in enumerate(self.reward_func_names):

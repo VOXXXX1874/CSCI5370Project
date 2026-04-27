@@ -1,6 +1,8 @@
 """Reward functions for GRPO training."""
 
 import re
+from collections import Counter
+from math import exp, log
 from math_verify import LatexExtractionConfig, parse, verify
 from math_verify.errors import TimeoutException
 from latex2sympy2_extended import NormalizationConfig
@@ -153,7 +155,7 @@ def outcome_rewards_general_code(answers, solutions, problems, verifiers):
         ).result()
         
 # for training
-def accuracy_reward(completions, solution, silence, **kwargs):
+def accuracy_reward(completions, solution, silence=[False], **kwargs):
     """Reward function that checks if the completion is the same as the ground truth."""
     contents = [completion[0]["content"] for completion in completions]
     rewards = []
@@ -225,7 +227,7 @@ def accuracy_reward(completions, solution, silence, **kwargs):
 
 def length_reward_threshold(max_length, overlong_punishment_threshold):
 
-    def length_reward(completions, solution, silence, **kwargs):
+    def length_reward(completions, solution, silence=[False], **kwargs):
         """Reward function that gives higher reward for shorter completions."""
         rewards = []
         completion_ids_list = kwargs.get('completion_ids_list', [None]*len(completions))
@@ -246,9 +248,203 @@ def length_reward_threshold(max_length, overlong_punishment_threshold):
 
     return length_reward
 
+
+def _to_text(content):
+    if isinstance(content, list) and len(content) > 0 and isinstance(content[0], dict):
+        return str(content[0].get("content", ""))
+    return str(content)
+
+
+def _tokenize_text(text):
+    return re.findall(r"\S+", text.lower())
+
+
+def _ngram_counts(tokens, n):
+    if n <= 0 or len(tokens) < n:
+        return Counter()
+    return Counter(tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1))
+
+
+def _f1_from_overlap(overlap, pred_total, ref_total):
+    if pred_total == 0 or ref_total == 0:
+        return 0.0
+    precision = overlap / pred_total
+    recall = overlap / ref_total
+    if precision + recall == 0:
+        return 0.0
+    return 2.0 * precision * recall / (precision + recall)
+
+
+def bleu_reward(n=4, smoothing=1e-9):
+    """Reward based on BLEU-n score between completion and solution."""
+    if n <= 0:
+        raise ValueError("n must be a positive integer for BLEU reward")
+
+    def _bleu_n_score(pred_text, ref_text):
+        pred_tokens = _tokenize_text(pred_text)
+        ref_tokens = _tokenize_text(ref_text)
+        if len(pred_tokens) == 0 or len(ref_tokens) == 0:
+            return 0.0
+
+        weights = [1.0 / n] * n
+        log_precision_sum = 0.0
+
+        for i in range(1, n + 1):
+            pred_counts = _ngram_counts(pred_tokens, i)
+            ref_counts = _ngram_counts(ref_tokens, i)
+            total_pred = sum(pred_counts.values())
+            if total_pred == 0:
+                precision_i = smoothing
+            else:
+                overlap = sum(min(count, ref_counts[gram]) for gram, count in pred_counts.items())
+                precision_i = (overlap + smoothing) / (total_pred + smoothing)
+            log_precision_sum += weights[i - 1] * float(log(precision_i))
+
+        pred_len = len(pred_tokens)
+        ref_len = len(ref_tokens)
+        if pred_len > ref_len:
+            brevity_penalty = 1.0
+        else:
+            brevity_penalty = float(exp(1.0 - ref_len / max(pred_len, 1)))
+
+        return brevity_penalty * float(exp(log_precision_sum))
+
+    def bleu_reward_fn(completions, solution, silence=[False], **kwargs):
+        rewards = []
+        for completion, sol in zip(completions, solution):
+            pred_text = _to_text(completion)
+            rewards.append(_bleu_n_score(pred_text, str(sol)))
+        if not silence[0]:
+            print(f"\nbleu-{n} rewards:", rewards)
+        return rewards
+
+    return bleu_reward_fn
+
+
+def rouge_n_reward(n=2):
+    """Reward based on ROUGE-N F1 score between completion and solution."""
+    if n <= 0:
+        raise ValueError("n must be a positive integer for ROUGE-N reward")
+
+    def _rouge_n_f1(pred_text, ref_text):
+        pred_tokens = _tokenize_text(pred_text)
+        ref_tokens = _tokenize_text(ref_text)
+        pred_counts = _ngram_counts(pred_tokens, n)
+        ref_counts = _ngram_counts(ref_tokens, n)
+        pred_total = sum(pred_counts.values())
+        ref_total = sum(ref_counts.values())
+        if pred_total == 0 or ref_total == 0:
+            return 0.0
+        overlap = sum(min(count, ref_counts[gram]) for gram, count in pred_counts.items())
+        return _f1_from_overlap(overlap, pred_total, ref_total)
+
+    def rouge_n_reward_fn(completions, solution, silence=[False], **kwargs):
+        rewards = []
+        for completion, sol in zip(completions, solution):
+            pred_text = _to_text(completion)
+            rewards.append(_rouge_n_f1(pred_text, str(sol)))
+        if not silence[0]:
+            print(f"\nrouge-{n} rewards:", rewards)
+        return rewards
+
+    return rouge_n_reward_fn
+
+
+def rouge_l_reward():
+    """Reward based on ROUGE-L F1 score using longest common subsequence."""
+
+    def _lcs_length(a, b):
+        if len(a) == 0 or len(b) == 0:
+            return 0
+        dp = [0] * (len(b) + 1)
+        for token_a in a:
+            prev = 0
+            for j, token_b in enumerate(b, start=1):
+                tmp = dp[j]
+                if token_a == token_b:
+                    dp[j] = prev + 1
+                else:
+                    dp[j] = max(dp[j], dp[j - 1])
+                prev = tmp
+        return dp[-1]
+
+    def _rouge_l_f1(pred_text, ref_text):
+        pred_tokens = _tokenize_text(pred_text)
+        ref_tokens = _tokenize_text(ref_text)
+        lcs = _lcs_length(pred_tokens, ref_tokens)
+        return _f1_from_overlap(lcs, len(pred_tokens), len(ref_tokens))
+
+    def rouge_l_reward_fn(completions, solution, silence=[False], **kwargs):
+        rewards = []
+        for completion, sol in zip(completions, solution):
+            pred_text = _to_text(completion)
+            rewards.append(_rouge_l_f1(pred_text, str(sol)))
+        if not silence[0]:
+            print("\nrouge-l rewards:", rewards)
+        return rewards
+
+    return rouge_l_reward_fn
+
+
+def rouge_s_reward():
+    """Reward based on ROUGE-S (skip-bigram) F1 score."""
+
+    def _skip_bigrams(tokens):
+        if len(tokens) < 2:
+            return Counter()
+        return Counter((tokens[i], tokens[j]) for i in range(len(tokens)) for j in range(i + 1, len(tokens)))
+
+    def _rouge_s_f1(pred_text, ref_text):
+        pred_tokens = _tokenize_text(pred_text)
+        ref_tokens = _tokenize_text(ref_text)
+        pred_counts = _skip_bigrams(pred_tokens)
+        ref_counts = _skip_bigrams(ref_tokens)
+        pred_total = sum(pred_counts.values())
+        ref_total = sum(ref_counts.values())
+        if pred_total == 0 or ref_total == 0:
+            return 0.0
+        overlap = sum(min(count, ref_counts[gram]) for gram, count in pred_counts.items())
+        return _f1_from_overlap(overlap, pred_total, ref_total)
+
+    def rouge_s_reward_fn(completions, solution, silence=[False], **kwargs):
+        rewards = []
+        for completion, sol in zip(completions, solution):
+            pred_text = _to_text(completion)
+            rewards.append(_rouge_s_f1(pred_text, str(sol)))
+        if not silence[0]:
+            print("\nrouge-s rewards:", rewards)
+        return rewards
+
+    return rouge_s_reward_fn
+
+
+def distinct_n_reward(n=2):
+    """Reward based on Distinct-n, i.e., unique n-grams divided by total n-grams."""
+    if n <= 0:
+        raise ValueError("n must be a positive integer for Distinct-n reward")
+
+    def _distinct_n(text):
+        tokens = _tokenize_text(text)
+        counts = _ngram_counts(tokens, n)
+        total = sum(counts.values())
+        if total == 0:
+            return 0.0
+        return len(counts) / total
+
+    def distinct_n_reward_fn(completions, solution, silence=[False], **kwargs):
+        rewards = []
+        for completion in completions:
+            pred_text = _to_text(completion)
+            rewards.append(_distinct_n(pred_text))
+        if not silence[0]:
+            print(f"\ndistinct-{n} rewards:", rewards)
+        return rewards
+
+    return distinct_n_reward_fn
+
 # for benchmark.py
 # The verifier, silence, and other parameters are passed as one element
-def eval_answer_reward(completions, solutions, silence=False, **kwargs):
+def eval_answer_reward(completions, solutions, silence=[False], **kwargs):
     """Reward function that checks if the completion is the same as the ground truth."""
     # Get the "verifier" abd "problems" from kwargs if provided
     verifiers = kwargs.get('verifiers', [None]*len(completions))
@@ -257,7 +453,7 @@ def eval_answer_reward(completions, solutions, silence=False, **kwargs):
     formatted_completions = [[{"content": c}] for c in completions]
     rewards = accuracy_reward(completions=formatted_completions, 
                               solution = solutions, 
-                              silence=[silence], 
+                              silence=silence * len(completions), 
                               verifier=verifiers, 
                               problem=problems)
 

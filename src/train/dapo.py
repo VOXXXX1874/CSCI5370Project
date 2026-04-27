@@ -27,6 +27,11 @@ from configs import GRPOConfig, GRPOScriptArguments
 from rewards import (
     accuracy_reward,
     length_reward_threshold,
+    bleu_reward,
+    rouge_n_reward,
+    rouge_l_reward,
+    rouge_s_reward,
+    distinct_n_reward,
 )
 from utils.prepare_dataset import prepare_dataset
 from dapo_trainer import DAPOTrainer
@@ -98,6 +103,11 @@ def main(script_args, training_args, model_args):
     REWARD_FUNCS_REGISTRY = {
         "accuracy": accuracy_reward,
         "length": length_reward_threshold(training_args.max_completion_length, training_args.overlong_punishment_threshold),
+        "bleu": bleu_reward(),
+        "rouge_n": rouge_n_reward(),
+        "rouge_l": rouge_l_reward(),
+        "rouge_s": rouge_s_reward(),
+        "distinct_n": distinct_n_reward(),
     }
     reward_funcs = [REWARD_FUNCS_REGISTRY[func] for func in script_args.reward_funcs]
 

@@ -58,7 +58,7 @@ To fully shape the distribution of instruct model/base model, we first craft an 
 1. The “seed” is the raw material, and the instruction tuning sample should be weakly related to this material. 
 2. The “scenario” is the main topic of instruction, including designing circuit, explaining concept, answering question, and so on.
 You will be given a seed raw material, which is a document related to quantum computing. You will also be given a list of scenarios. Your task is to select the most suitable scenario for the given seed raw material, and then generate an instruction tuning sample. 
-The instruction tuning sample only need to have a weak relation to the seed material (such that we can ensure diversity). The instruction tuning sample should be in the format of a JSON object, which contains the following fields:
+The instruction tuning sample only need to have a weak relation to the seed material (such that we can ensure diversity), but notice that the seed will not be included in instruction or input during training, so you need to make sure the instruction, input, and output are self-contained. The instruction tuning sample should be in the format of a JSON object, which contains the following fields:
 - "instruction" (str): The instruction for the model to follow. It should be a clear and concise description of the task that the model needs to perform.
 - "input" (str): The input for the model to process. It should be a relevant and informative part of the seed raw material that can help the model to complete the task.
 - "output" (str): The expected output from the model. It should be a correct and complete answer to the instruction, based on the input and the seed raw material.
@@ -106,6 +106,8 @@ async def generate_questions(seed, prompt, scenario_distribution, tokenizer, res
             )
             # Load the response content as json
             instruction_tuning_sample = json.loads(response.choices[0].message.content)
+            if type(instruction_tuning_sample) == list:
+                instruction_tuning_sample = instruction_tuning_sample[0]
             result_list.append(instruction_tuning_sample)
             chosen_scenario = instruction_tuning_sample["scenario"]
             scenario_distribution[chosen_scenario] += 1
@@ -116,7 +118,7 @@ async def generate_questions(seed, prompt, scenario_distribution, tokenizer, res
             exception_list.append(seed)
         
 # A function to generate the dataset
-async def generate_dataset(input_file, output_path, prompt, scenario_distribution, tokenizer):
+async def generate_dataset(input_file, output_path, num_samples, prompt, scenario_distribution, tokenizer):
     # Initialize deepseek client
     client = AsyncOpenAI(api_key=API_KEY, base_url="https://api.deepseek.com")
     # Control the number of tasks running concurrently
@@ -132,7 +134,7 @@ async def generate_dataset(input_file, output_path, prompt, scenario_distributio
 
     print("Start generating questions")
     # Create a list of tasks to generate questions for each vid_name
-    tasks = [generate_questions(seed, prompt, scenario_distribution, tokenizer, result_list, exception_list, sem, client) for seed in seed_data]
+    tasks = [generate_questions(seed, prompt, scenario_distribution, tokenizer, result_list, exception_list, sem, client) for seed in seed_data[:num_samples]]
 
     # Run the tasks
     await asyncio.gather(*tasks)
@@ -151,6 +153,7 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer_dir", type=str, default="data/InstructionTuning/deepseek_tokenizer", help="The directory of the tokenizer")
     parser.add_argument("--input_file", type=str, default="data/InstructionTuning/raw_materials/QC_corpus_merged_100_3100.jsonl", help="The input file for generating instruction tuning samples")
     parser.add_argument("--output_path", type=str, default="result.json", help="The output path for saving the generated instruction tuning samples")
+    parser.add_argument("--num_samples", type=int, default=3000, help="The number of instruction tuning samples to generate")
     args = parser.parse_args()
 
     tokenizer = transformers.AutoTokenizer.from_pretrained( 
@@ -160,4 +163,4 @@ if __name__ == "__main__":
     scenario_distribution = [1] * len(SCENARIO_LIST)
 
     # Run the async function
-    asyncio.run(generate_dataset(args.input_file, args.output_path, prompt_instruction_generation, scenario_distribution, tokenizer))
+    asyncio.run(generate_dataset(args.input_file, args.output_path, args.num_samples, prompt_instruction_generation, scenario_distribution, tokenizer))
